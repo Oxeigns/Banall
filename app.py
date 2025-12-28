@@ -1,17 +1,30 @@
-import json
+import os
 import asyncio
 import time
 from telethon import TelegramClient, events
 from telethon.errors import ChatAdminRequiredError
 
-# Load config
-with open("config.json") as f:
-    CONFIG = json.load(f)
+def get_env_var(name):
+    value = os.environ.get(name)
+    if value is None:
+        print(f"⚠️ Environment variable {name} is missing.")
+    return value
 
-API_ID = CONFIG["API_ID"]
-API_HASH = CONFIG["API_HASH"]
-BOT_TOKEN = CONFIG["BOT_TOKEN"]
-LOG_GROUP_ID = int(CONFIG["LOG_GROUP_ID"])
+
+def to_int(value, name):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"⚠️ Environment variable {name} could not be parsed as an integer.")
+        return None
+
+
+BOT_TOKEN = get_env_var("BOT_TOKEN")
+API_ID = to_int(get_env_var("API_ID"), "API_ID")
+API_HASH = get_env_var("API_HASH")
+LOG_GROUP_ID = to_int(get_env_var("LOG_GROUP_ID"), "LOG_GROUP_ID")
 
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
