@@ -1,0 +1,27 @@
+{
+  "name": "Telegram Auto Rights Monitor Bot",
+  "description": "A silent Telegram bot that removes all members from groups/channels if it has ban rights, with auto 10s rights monitoring.",
+  "repository": "https://github.com/yourusername/auto-rights-bot",
+  "keywords": ["telegram", "telethon", "bot", "heroku"],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Telegram bot token from BotFather",
+      "required": true
+    },
+    "API_ID": {
+      "description": "Your Telegram API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Your Telegram API hash from my.telegram.org",
+      "required": true
+    },
+    "LOG_GROUP_ID": {
+      "description": "Telegram group ID for bot logs (use -100 prefix for supergroups)",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    { "url": "heroku/python" }
+  ]
+}
