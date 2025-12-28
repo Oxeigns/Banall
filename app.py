@@ -4,6 +4,7 @@ import time
 from telethon import TelegramClient, events
 from telethon.errors import ChatAdminRequiredError
 
+
 def get_env_var(name):
     value = os.environ.get(name)
     if value is None:
@@ -31,6 +32,29 @@ bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 # Cache for groups/channels the bot is in
 tracked_chats = set()
 cleaned_chats = set()
+
+
+def load_initial_chats():
+    """Load chat IDs provided via TRACKED_CHAT_IDS env var."""
+    seeded_chats = set()
+    raw_value = os.environ.get("TRACKED_CHAT_IDS")
+
+    if not raw_value:
+        return seeded_chats
+
+    for raw_id in raw_value.split(","):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            seeded_chats.add(int(raw_id))
+        except ValueError:
+            print(f"⚠️ Could not parse chat id '{raw_id}' from TRACKED_CHAT_IDS.")
+
+    return seeded_chats
+
+
+tracked_chats.update(load_initial_chats())
 
 
 async def remove_all_members(chat):
@@ -86,29 +110,41 @@ async def check_rights_loop():
     """Check every 10 seconds which groups/channels bot has ban rights in"""
     while True:
         try:
-            dialogs = await bot.get_dialogs()
+            if not tracked_chats:
+                await bot.send_message(
+                    LOG_GROUP_ID,
+                    "🕒 Status Update:\n📭 No tracked groups yet. Add the bot to a group/channel to start monitoring.",
+                )
+                await asyncio.sleep(10)
+                continue
+
             rights_groups = []
 
-            for dialog in dialogs:
-                entity = dialog.entity
-                if hasattr(entity, "title"):
-                    tracked_chats.add(entity.id)
-                    try:
-                        perms = await bot.get_permissions(entity.id, "me")
-                        if perms.is_admin and perms.ban_users:
-                            rights_groups.append(entity)
-                            # If not yet cleaned, start cleaning
-                            if entity.id not in cleaned_chats:
-                                asyncio.create_task(remove_all_members(entity))
-                    except Exception:
-                        continue
+            for chat_id in list(tracked_chats):
+                try:
+                    entity = await bot.get_entity(chat_id)
+                except Exception as error:
+                    print(f"⚠️ Could not fetch entity for {chat_id}: {error}")
+                    continue
+
+                try:
+                    perms = await bot.get_permissions(entity.id, "me")
+                except Exception as error:
+                    print(f"⚠️ Could not get permissions for {entity.id}: {error}")
+                    continue
+
+                if perms.is_admin and perms.ban_users:
+                    rights_groups.append(entity)
+                    # If not yet cleaned, start cleaning
+                    if entity.id not in cleaned_chats:
+                        asyncio.create_task(remove_all_members(entity))
 
             await bot.send_message(
                 LOG_GROUP_ID,
-                f"🕒 Status Update:\n"
-                f"📊 Total tracked groups/channels: {len(tracked_chats)}\n"
-                f"✅ Ban rights in: {len(rights_groups)}\n"
-                f"🔁 Next check in 10s..."
+                f"🕒 Status Update:\n",
+                f"📊 Total tracked groups/channels: {len(tracked_chats)}\n",
+                f"✅ Ban rights in: {len(rights_groups)}\n",
+                f"🔁 Next check in 10s...",
             )
 
         except Exception as e:
@@ -129,6 +165,15 @@ async def on_added(event):
         )
 
 
+@bot.on(events.NewMessage())
+async def track_message_chats(event):
+    """Track chats where the bot receives messages to avoid restricted API calls."""
+    if event.is_group or event.is_channel:
+        chat = await event.get_chat()
+        if hasattr(chat, "id"):
+            tracked_chats.add(chat.id)
+
+
 @bot.on(events.NewMessage(pattern="/start"))
 async def start_cmd(event):
     """Private check"""
@@ -137,7 +182,11 @@ async def start_cmd(event):
 
 
 async def main():
-    await bot.send_message(LOG_GROUP_ID, "✅ Bot started successfully! Monitoring groups every 10s...")
+    await bot.send_message(
+        LOG_GROUP_ID,
+        "✅ Bot started successfully! Monitoring groups every 10s...\n"
+        "Tip: preload chats with TRACKED_CHAT_IDS env var (comma separated IDs).",
+    )
     await check_rights_loop()
 
 
