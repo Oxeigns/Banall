@@ -1,8 +1,16 @@
 {
   "name": "Telegram Auto Rights Monitor Bot",
-  "description": "A silent Telegram bot that removes all members from groups/channels if it has ban rights, with auto 10s rights monitoring.",
+  "description": "A silent Telegram bot that monitors its admin rights and removes members if ban permission is granted.",
   "repository": "https://github.com/yourusername/auto-rights-bot",
-  "keywords": ["telegram", "telethon", "bot", "heroku"],
+  "logo": "https://telegram.org/img/t_logo.png",
+  "keywords": [
+    "telegram",
+    "telethon",
+    "bot",
+    "python",
+    "heroku"
+  ],
+  "stack": "heroku-22",
   "env": {
     "BOT_TOKEN": {
       "description": "Your Telegram bot token from BotFather",
@@ -21,7 +29,15 @@
       "required": true
     }
   },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
   "buildpacks": [
-    { "url": "heroku/python" }
+    {
+      "url": "heroku/python"
+    }
   ]
 }
